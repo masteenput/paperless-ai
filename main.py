@@ -4,6 +4,7 @@ import logging
 import hashlib
 import numpy as np
 import pickle
+import base64
 from datetime import datetime
 from typing import List, Dict, Optional, Any, Union, Tuple
 import time
@@ -14,6 +15,7 @@ import urllib3
 import ssl
 import socket
 import tempfile
+from urllib.parse import urlparse
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -57,12 +59,12 @@ def fetch_ssl_certificate(hostname, port=443):
                 cert_der = ssock.getpeercert(binary_form=True)
                 
                 # Convert DER to PEM format
-                import base64
                 cert_pem = "-----BEGIN CERTIFICATE-----\n"
-                cert_pem += base64.b64encode(cert_der).decode('ascii')
+                cert_b64 = base64.b64encode(cert_der).decode('ascii')
                 # Add line breaks every 64 characters
-                cert_pem = cert_pem[:27] + '\n'.join([cert_pem[i:i+64] for i in range(27, len(cert_pem), 64)])
-                cert_pem += "\n-----END CERTIFICATE-----\n"
+                for i in range(0, len(cert_b64), 64):
+                    cert_pem += cert_b64[i:i+64] + "\n"
+                cert_pem += "-----END CERTIFICATE-----\n"
                 
                 # Save to temporary file
                 cert_file = tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False)
@@ -95,6 +97,8 @@ logger.info(f"Loaded PAPERLESS_URL: {os.getenv('PAPERLESS_URL')}")
 logger.info(f"Loaded PAPERLESS_NGX_URL: {os.getenv('PAPERLESS_NGX_URL')}")
 logger.info(f"Loaded PAPERLESS_HOST: {os.getenv('PAPERLESS_HOST')}")
 logger.info(f"Loaded PAPERLESS_API_TOKEN: {'[SET]' if os.getenv('PAPERLESS_API_TOKEN') else '[NOT SET]'}")
+logger.info(f"Loaded PAPERLESS_SSL_VERIFY: {os.getenv('PAPERLESS_SSL_VERIFY', 'NOT SET')}")
+logger.info(f"Loaded PAPERLESS_SSL_FETCH_CERT: {os.getenv('PAPERLESS_SSL_FETCH_CERT', 'NOT SET')}")
 
 # Handle SSL verification settings
 ssl_verify_env = os.getenv("PAPERLESS_SSL_VERIFY", "true").lower()
@@ -283,16 +287,22 @@ class DataManager:
         self.ssl_fetch_cert = ssl_fetch_cert_env in ("true", "1", "yes", "on")
         self.ssl_cert_file = None
         
+        logger.info(f"SSL configuration - verify: {self.ssl_verify}, fetch_cert: {self.ssl_fetch_cert}")
+        logger.info(f"Paperless URL for SSL: {self.paperless_url}")
+        
         # If SSL verification is enabled but we should fetch the certificate
         if self.ssl_verify and self.ssl_fetch_cert and self.paperless_url:
+            logger.info("Conditions met for SSL certificate fetching, attempting to fetch...")
             try:
                 # Extract hostname from URL
-                from urllib.parse import urlparse
                 parsed_url = urlparse(self.paperless_url)
                 hostname = parsed_url.hostname
                 port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
                 
+                logger.info(f"Parsed URL - hostname: {hostname}, port: {port}, scheme: {parsed_url.scheme}")
+                
                 if hostname and parsed_url.scheme == 'https':
+                    logger.info(f"Attempting to fetch SSL certificate from {hostname}:{port}")
                     self.ssl_cert_file = fetch_ssl_certificate(hostname, port)
                     if self.ssl_cert_file:
                         logger.info(f"Using fetched SSL certificate for verification: {self.ssl_cert_file}")
@@ -300,8 +310,14 @@ class DataManager:
                         self.ssl_verify = self.ssl_cert_file
                     else:
                         logger.warning("Failed to fetch SSL certificate, falling back to system verification")
+                else:
+                    logger.warning(f"Cannot fetch certificate - hostname: {hostname}, scheme: {parsed_url.scheme}")
             except Exception as e:
                 logger.error(f"Error setting up SSL certificate fetching: {str(e)}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
+        else:
+            logger.info(f"SSL certificate fetching not triggered - verify: {self.ssl_verify}, fetch_cert: {self.ssl_fetch_cert}, url: {bool(self.paperless_url)}")
         
         # Debug-Informationen ausgeben
         logger.info(f"Environment variables: PAPERLESS_API_URL={os.getenv('PAPERLESS_API_URL')}, PAPERLESS_URL={os.getenv('PAPERLESS_URL')}, PAPERLESS_NGX_URL={os.getenv('PAPERLESS_NGX_URL')}, PAPERLESS_HOST={os.getenv('PAPERLESS_HOST')}")
