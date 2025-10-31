@@ -11,6 +11,9 @@ import traceback
 
 import requests
 import urllib3
+import ssl
+import socket
+import tempfile
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +36,45 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger("RAGZ")
+
+def fetch_ssl_certificate(hostname, port=443):
+    """
+    Fetch SSL certificate from a hostname and save it to a temporary file.
+    Returns the path to the certificate file or None if failed.
+    """
+    try:
+        logger.info(f"Fetching SSL certificate from {hostname}:{port}")
+        
+        # Create SSL context that doesn't verify certificates (for fetching only)
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        
+        # Connect and get certificate
+        with socket.create_connection((hostname, port), timeout=10) as sock:
+            with context.wrap_socket(sock, server_hostname=hostname) as ssock:
+                # Get certificate in DER format
+                cert_der = ssock.getpeercert(binary_form=True)
+                
+                # Convert DER to PEM format
+                import base64
+                cert_pem = "-----BEGIN CERTIFICATE-----\n"
+                cert_pem += base64.b64encode(cert_der).decode('ascii')
+                # Add line breaks every 64 characters
+                cert_pem = cert_pem[:27] + '\n'.join([cert_pem[i:i+64] for i in range(27, len(cert_pem), 64)])
+                cert_pem += "\n-----END CERTIFICATE-----\n"
+                
+                # Save to temporary file
+                cert_file = tempfile.NamedTemporaryFile(mode='w', suffix='.pem', delete=False)
+                cert_file.write(cert_pem)
+                cert_file.close()
+                
+                logger.info(f"SSL certificate saved to {cert_file.name}")
+                return cert_file.name
+                
+    except Exception as e:
+        logger.error(f"Failed to fetch SSL certificate from {hostname}:{port}: {str(e)}")
+        return None
 
 # Load environment variables from data directory
 data_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', '.env')
@@ -57,12 +99,17 @@ logger.info(f"Loaded PAPERLESS_API_TOKEN: {'[SET]' if os.getenv('PAPERLESS_API_T
 # Handle SSL verification settings
 ssl_verify_env = os.getenv("PAPERLESS_SSL_VERIFY", "true").lower()
 ssl_verify_enabled = ssl_verify_env not in ("false", "0", "no", "off")
+ssl_fetch_cert_env = os.getenv("PAPERLESS_SSL_FETCH_CERT", "false").lower()
+ssl_fetch_cert_enabled = ssl_fetch_cert_env in ("true", "1", "yes", "on")
 
 if not ssl_verify_enabled:
     logger.warning("SSL certificate verification is DISABLED. This reduces security.")
     logger.warning("Only use PAPERLESS_SSL_VERIFY=false for development with self-signed certificates.")
     # Suppress urllib3 SSL warnings when verification is disabled
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+elif ssl_fetch_cert_enabled:
+    logger.info("SSL certificate fetching is enabled for self-signed certificates.")
+    logger.info("This provides better security than disabling SSL verification completely.")
 
 # Constants
 DOCUMENTS_FILE = "./data/documents.json"
@@ -231,10 +278,36 @@ class DataManager:
         ssl_verify_env = os.getenv("PAPERLESS_SSL_VERIFY", "true").lower()
         self.ssl_verify = ssl_verify_env not in ("false", "0", "no", "off")
         
+        # SSL certificate fetching settings
+        ssl_fetch_cert_env = os.getenv("PAPERLESS_SSL_FETCH_CERT", "false").lower()
+        self.ssl_fetch_cert = ssl_fetch_cert_env in ("true", "1", "yes", "on")
+        self.ssl_cert_file = None
+        
+        # If SSL verification is enabled but we should fetch the certificate
+        if self.ssl_verify and self.ssl_fetch_cert and self.paperless_url:
+            try:
+                # Extract hostname from URL
+                from urllib.parse import urlparse
+                parsed_url = urlparse(self.paperless_url)
+                hostname = parsed_url.hostname
+                port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
+                
+                if hostname and parsed_url.scheme == 'https':
+                    self.ssl_cert_file = fetch_ssl_certificate(hostname, port)
+                    if self.ssl_cert_file:
+                        logger.info(f"Using fetched SSL certificate for verification: {self.ssl_cert_file}")
+                        # Set ssl_verify to the certificate file path
+                        self.ssl_verify = self.ssl_cert_file
+                    else:
+                        logger.warning("Failed to fetch SSL certificate, falling back to system verification")
+            except Exception as e:
+                logger.error(f"Error setting up SSL certificate fetching: {str(e)}")
+        
         # Debug-Informationen ausgeben
         logger.info(f"Environment variables: PAPERLESS_API_URL={os.getenv('PAPERLESS_API_URL')}, PAPERLESS_URL={os.getenv('PAPERLESS_URL')}, PAPERLESS_NGX_URL={os.getenv('PAPERLESS_NGX_URL')}, PAPERLESS_HOST={os.getenv('PAPERLESS_HOST')}")
         logger.info(f"Environment variables: PAPERLESS_TOKEN={'[SET]' if os.getenv('PAPERLESS_TOKEN') else '[NOT SET]'}, PAPERLESS_API_TOKEN={'[SET]' if os.getenv('PAPERLESS_API_TOKEN') else '[NOT SET]'}, PAPERLESS_APIKEY={'[SET]' if os.getenv('PAPERLESS_APIKEY') else '[NOT SET]'}")
         logger.info(f"SSL verification enabled: {self.ssl_verify}")
+        logger.info(f"SSL certificate fetching enabled: {self.ssl_fetch_cert}")
         
         if not self.paperless_url or not self.paperless_token:
             logger.error("Missing PAPERLESS_API_URL/PAPERLESS_URL or PAPERLESS_API_TOKEN in .env file")
@@ -1552,8 +1625,10 @@ async def startup_event():
                 f.write("# Paperless-NGX API configuration\n")
                 f.write("PAPERLESS_URL=https://your-paperless-instance\n")
                 f.write("PAPERLESS_API_TOKEN=your-api-token\n")
-                f.write("\n# SSL configuration\n")
-                f.write("# Set to false to disable SSL certificate verification for self-signed certificates\n")
+                f.write("\n# SSL configuration for self-signed certificates\n")
+                f.write("# Option 1: Fetch and trust the certificate (recommended for self-signed certs)\n")
+                f.write("# PAPERLESS_SSL_FETCH_CERT=true\n")
+                f.write("\n# Option 2: Disable SSL certificate verification (less secure)\n")
                 f.write("# WARNING: Only use this for development environments\n")
                 f.write("# PAPERLESS_SSL_VERIFY=false\n")
             logger.info(f"Created example .env file at {os.path.abspath(env_file_path)}")

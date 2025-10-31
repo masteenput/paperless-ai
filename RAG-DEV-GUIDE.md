@@ -35,7 +35,11 @@ pip install -r requirements.txt
 PAPERLESS_API_URL=https://your-paperless-ngx-instance
 PAPERLESS_API_TOKEN=your-api-token
 
-# Optional: Disable SSL certificate verification for self-signed certificates
+# SSL configuration options for self-signed certificates
+# Option 1: Fetch and trust the certificate (more secure)
+# PAPERLESS_SSL_FETCH_CERT=true
+
+# Option 2: Disable SSL certificate verification (less secure)
 # WARNING: Only use this for development environments with self-signed certificates
 # PAPERLESS_SSL_VERIFY=false
 ```
