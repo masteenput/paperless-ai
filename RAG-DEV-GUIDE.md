@@ -34,6 +34,10 @@ pip install -r requirements.txt
 ```
 PAPERLESS_API_URL=https://your-paperless-ngx-instance
 PAPERLESS_API_TOKEN=your-api-token
+
+# Optional: Disable SSL certificate verification for self-signed certificates
+# WARNING: Only use this for development environments with self-signed certificates
+# PAPERLESS_SSL_VERIFY=false
 ```
 
 **Note:** The Python service will also read the existing API settings from this file (PAPERLESS_API_URL).

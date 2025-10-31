@@ -10,6 +10,7 @@ import time
 import traceback
 
 import requests
+import urllib3
 import uvicorn
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -52,6 +53,16 @@ logger.info(f"Loaded PAPERLESS_URL: {os.getenv('PAPERLESS_URL')}")
 logger.info(f"Loaded PAPERLESS_NGX_URL: {os.getenv('PAPERLESS_NGX_URL')}")
 logger.info(f"Loaded PAPERLESS_HOST: {os.getenv('PAPERLESS_HOST')}")
 logger.info(f"Loaded PAPERLESS_API_TOKEN: {'[SET]' if os.getenv('PAPERLESS_API_TOKEN') else '[NOT SET]'}")
+
+# Handle SSL verification settings
+ssl_verify_env = os.getenv("PAPERLESS_SSL_VERIFY", "true").lower()
+ssl_verify_enabled = ssl_verify_env not in ("false", "0", "no", "off")
+
+if not ssl_verify_enabled:
+    logger.warning("SSL certificate verification is DISABLED. This reduces security.")
+    logger.warning("Only use PAPERLESS_SSL_VERIFY=false for development with self-signed certificates.")
+    # Suppress urllib3 SSL warnings when verification is disabled
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # Constants
 DOCUMENTS_FILE = "./data/documents.json"
@@ -216,9 +227,14 @@ class DataManager:
         self.paperless_url = paperless_api_url
         self.paperless_token = os.getenv("PAPERLESS_TOKEN") or os.getenv("PAPERLESS_API_TOKEN") or os.getenv("PAPERLESS_APIKEY")
         
+        # SSL verification settings - defaults to True for security
+        ssl_verify_env = os.getenv("PAPERLESS_SSL_VERIFY", "true").lower()
+        self.ssl_verify = ssl_verify_env not in ("false", "0", "no", "off")
+        
         # Debug-Informationen ausgeben
         logger.info(f"Environment variables: PAPERLESS_API_URL={os.getenv('PAPERLESS_API_URL')}, PAPERLESS_URL={os.getenv('PAPERLESS_URL')}, PAPERLESS_NGX_URL={os.getenv('PAPERLESS_NGX_URL')}, PAPERLESS_HOST={os.getenv('PAPERLESS_HOST')}")
         logger.info(f"Environment variables: PAPERLESS_TOKEN={'[SET]' if os.getenv('PAPERLESS_TOKEN') else '[NOT SET]'}, PAPERLESS_API_TOKEN={'[SET]' if os.getenv('PAPERLESS_API_TOKEN') else '[NOT SET]'}, PAPERLESS_APIKEY={'[SET]' if os.getenv('PAPERLESS_APIKEY') else '[NOT SET]'}")
+        logger.info(f"SSL verification enabled: {self.ssl_verify}")
         
         if not self.paperless_url or not self.paperless_token:
             logger.error("Missing PAPERLESS_API_URL/PAPERLESS_URL or PAPERLESS_API_TOKEN in .env file")
@@ -293,7 +309,8 @@ class DataManager:
             response = requests.get(
                 url,
                 headers=self._get_headers(),
-                timeout=10
+                timeout=10,
+                verify=self.ssl_verify
             )
             
             if response.status_code != 200:
@@ -335,7 +352,8 @@ class DataManager:
                 response = requests.get(
                     url,
                     headers=self._get_headers(),
-                    timeout=30
+                    timeout=30,
+                    verify=self.ssl_verify
                 )
                 
                 # Log response information for debugging
@@ -378,7 +396,8 @@ class DataManager:
                 content_response = requests.get(
                     f"{self.paperless_url}/api/documents/{doc['id']}/download/txt/",
                     headers=self._get_headers(),
-                    timeout=30
+                    timeout=30,
+                    verify=self.ssl_verify
                 )
                 
                 if content_response.status_code == 200:
@@ -396,7 +415,8 @@ class DataManager:
                 corr_response = requests.get(
                     f"{self.paperless_url}/api/correspondents/{corr_id}/",
                     headers=self._get_headers(),
-                    timeout=10
+                    timeout=10,
+                    verify=self.ssl_verify
                 )
                 
                 if corr_response.status_code == 200:
@@ -409,7 +429,8 @@ class DataManager:
                     tag_response = requests.get(
                         f"{self.paperless_url}/api/tags/{tag_id}/",
                         headers=self._get_headers(),
-                        timeout=10
+                        timeout=10,
+                        verify=self.ssl_verify
                     )
                     
                     if tag_response.status_code == 200:
@@ -1531,6 +1552,10 @@ async def startup_event():
                 f.write("# Paperless-NGX API configuration\n")
                 f.write("PAPERLESS_URL=https://your-paperless-instance\n")
                 f.write("PAPERLESS_API_TOKEN=your-api-token\n")
+                f.write("\n# SSL configuration\n")
+                f.write("# Set to false to disable SSL certificate verification for self-signed certificates\n")
+                f.write("# WARNING: Only use this for development environments\n")
+                f.write("# PAPERLESS_SSL_VERIFY=false\n")
             logger.info(f"Created example .env file at {os.path.abspath(env_file_path)}")
             logger.info("Please edit the .env file with your Paperless-NGX API configuration")
             logger.warning("Starting with limited functionality due to missing API configuration")

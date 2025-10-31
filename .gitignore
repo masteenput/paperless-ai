@@ -41,3 +41,6 @@ rag.ejs.old
 surya_env/
 ocr_server.py
 surya_models.py
+
+#Ignore vscode AI rules
+.github/instructions/codacy.instructions.md
